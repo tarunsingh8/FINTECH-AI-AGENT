@@ -289,19 +289,6 @@ await withRetry(
 
 ---
 
-## 🔮 What's Next
-
-```
-[ ] Swap mock portfolio with real CAMS/KFintech API
-[ ] Add WebSocket support for streaming responses
-[ ] Add a SIPAgent for SIP calculator + recommendations
-[ ] Dockerize for deployment
-[ ] Add rate limiting per sessionId
-[ ] Swagger/OpenAPI documentation
-```
-
----
-
 <div align="center">
 
 **Built by [Tarun Kumar Singh](https://github.com/tarunsingh)**
