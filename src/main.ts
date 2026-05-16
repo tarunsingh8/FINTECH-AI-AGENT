@@ -22,13 +22,13 @@ async function bootstrap() {
   await app.listen(port);
 
   console.log(`
-╔══════════════════════════════════════════════╗
-║   🚀 Fintech AI Agent API is running!        ║
-║                                              ║
-║   POST   http://localhost:${port}/chat           ║
-║   DELETE http://localhost:${port}/chat/:sessionId║
-║   GET    http://localhost:${port}/health         ║
-╚══════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════╗
+║   🚀 Fintech AI Agent API is running!                 ║
+║                                                       ║
+║   POST   http://localhost:${port}/chat                ║
+║   DELETE http://localhost:${port}/chat/:sessionId     ║
+║   GET    http://localhost:${port}/health              ║
+╚═══════════════════════════════════════════════════════╝
   `);
 }
 

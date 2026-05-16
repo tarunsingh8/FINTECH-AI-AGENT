@@ -2,6 +2,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { LoanAgentWithMemory } from "./LoanAgentWithMemory.js";
 import { PortfolioAgent } from "./PortfolioAgent.js";
 import { MarketAgent } from "./MarketAgent.js";
+import { DocumentAgent } from "./DocumentAgent.js";          // ← add
 import { ConversationMemory } from "../memory/conversationMemory.js";
 import { withRetry } from "../utils/retry.js";
 import dotenv from "dotenv";
@@ -10,128 +11,115 @@ dotenv.config();
 const client = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 export class Orchestrator {
-    constructor(sessionId) {
-        this.sessionId = sessionId;
+  constructor(sessionId) {
+    this.sessionId = sessionId;
 
-        // Boot up all agents
-        this.agents = {
-            LoanAgent: new LoanAgentWithMemory(sessionId),
-            PortfolioAgent: new PortfolioAgent(sessionId),
-            MarketAgent: new MarketAgent(sessionId),
-        };
+    this.agents = {
+      LoanAgent      : new LoanAgentWithMemory(sessionId),
+      PortfolioAgent : new PortfolioAgent(sessionId),
+      MarketAgent    : new MarketAgent(sessionId),
+      DocumentAgent  : new DocumentAgent(sessionId),          // ← add
+    };
 
-        // Shared memory for orchestrator decisions
-        this.memory = new ConversationMemory(`orchestrator_${sessionId}`);
-    }
+    this.memory = new ConversationMemory(`orchestrator_${sessionId}`);
+  }
 
-    // Step 1 — Ask AI which agent should handle this message
-    async classifyIntent(userMessage, history) {
-        const model = client.getGenerativeModel({
-            model: "gemini-3.1-flash-lite",
-        });
+  async classifyIntent(userMessage, history) {
+    const model = client.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-        // Build context from last 4 messages so AI understands conversation flow
-        const recentHistory = history
-            .slice(-4)
-            .map((m) => `${m.role}: ${m.content}`)
-            .join("\n");
+    const recentHistory = history
+      .slice(-4)
+      .map((m) => `${m.role}: ${m.content}`)
+      .join("\n");
 
-        const prompt = `
+    const prompt = `
 You are a routing assistant for a fintech AI system.
 Based on the user message, decide which agent should handle it.
 
 Available agents:
-- LoanAgent      : loan EMI calculations, interest rates, loan eligibility, repayment queries
-- PortfolioAgent : mutual fund portfolio, investments, fund details, returns, NAV
-- MarketAgent    : live stock prices, share prices, market data, NSE/BSE stocks
+- LoanAgent      : EMI calculations, interest rates, loan eligibility, repayment
+- PortfolioAgent : Mutual fund portfolio, investments, fund details, returns
+- MarketAgent    : Live stock prices, share prices, NSE/BSE market data
+- DocumentAgent  : RBI guidelines, SEBI regulations, loan policies, tax benefits,
+                   CIBIL score info, investment rules, eligibility criteria,
+                   any question about rules/regulations/policies/guidelines
 
 Recent conversation:
 ${recentHistory || "No history yet"}
 
 User message: "${userMessage}"
 
-Reply with ONLY one of these exact words:
-LoanAgent | PortfolioAgent | MarketAgent | General
+Reply with ONLY one of: LoanAgent | PortfolioAgent | MarketAgent | DocumentAgent | General
 
 Rules:
-- If message is about loans, EMI, interest → LoanAgent
-- If message is about portfolio, mutual funds, investments → PortfolioAgent
-- If message is about stocks, share price, market → MarketAgent
-- If it's a greeting or unrelated question → General
+- Calculation questions (EMI, returns math) → LoanAgent or PortfolioAgent
+- Live price questions → MarketAgent
+- Policy/regulation/rule/eligibility/tax/guideline questions → DocumentAgent
+- Greetings or off-topic → General
 `;
 
-        const result = await withRetry(
-            () => model.generateContent(prompt),
-            { label: "Intent classification", maxRetries: 3 }
-        );
+    const result = await withRetry(
+      () => model.generateContent(prompt),
+      { label: "Intent classification", maxRetries: 3 }
+    );
 
-        const intent = result.response.text().trim();
-        console.log(`\n🧭 Orchestrator routed to: ${intent}`);
-        return intent;
-    }
+    const intent = result.response.text().trim();
+    console.log(`\n🧭 Orchestrator routed to: ${intent}`);
+    return intent;
+  }
 
-    // Step 2 — Handle general messages (greetings, unknown queries)
-    async handleGeneral(userMessage) {
-        const model = client.getGenerativeModel({
-            model: "gemini-3.1-flash-lite",
-            systemInstruction: `You are a helpful fintech assistant.
+  async handleGeneral(userMessage) {
+    const model = client.getGenerativeModel({
+      model: "gemini-2.5-flash",
+      systemInstruction: `You are a helpful fintech assistant.
                           You can help with:
                           • Loan EMI calculations
                           • Mutual fund portfolio queries
                           • Live stock prices
-                          Keep responses short and friendly.
-                          If user asks something outside these topics,
-                          politely guide them back.`,
-        });
+                          • RBI/SEBI guidelines and policies
+                          Keep responses short and friendly.`,
+    });
 
-        const result = await withRetry(
-            () => model.generateContent(userMessage),
-            { label: "General response", maxRetries: 3 }
-        );
+    const result = await withRetry(
+      () => model.generateContent(userMessage),
+      { label: "General response", maxRetries: 3 }
+    );
 
-        return result.response.text();
+    return result.response.text();
+  }
+
+  async process(userMessage) {
+    console.log(`\n${"═".repeat(55)}`);
+    console.log(`👤 User: ${userMessage}`);
+    console.log(`${"═".repeat(55)}`);
+
+    try {
+      const history = await this.memory.getHistory();
+      const intent = await this.classifyIntent(userMessage, history);
+
+      let reply;
+
+      if (intent === "LoanAgent") {
+        reply = await this.agents.LoanAgent.process(userMessage);
+      } else if (intent === "PortfolioAgent") {
+        reply = await this.agents.PortfolioAgent.process(userMessage);
+      } else if (intent === "MarketAgent") {
+        reply = await this.agents.MarketAgent.process(userMessage);
+      } else if (intent === "DocumentAgent") {
+        reply = await this.agents.DocumentAgent.process(userMessage);
+      } else {
+        reply = await this.handleGeneral(userMessage);
+        console.log(`\n🤖 Assistant: ${reply}`);
+      }
+
+      await this.memory.addMessage("user", userMessage);
+      await this.memory.addMessage("model", `[${intent}]: ${reply}`);
+
+      return reply;
+
+    } catch (error) {
+      console.error(`❌ Orchestrator error:`, error.message);
+      return "I'm experiencing issues right now. Please try again.";
     }
-
-    // Step 3 — Main entry point
-    async process(userMessage) {
-        console.log(`\n${"═".repeat(55)}`);
-        console.log(`👤 User: ${userMessage}`);
-        console.log(`${"═".repeat(55)}`);
-
-        try {
-            // Get history for context-aware routing
-            const history = await this.memory.getHistory();
-
-            // Classify intent
-            const intent = await this.classifyIntent(userMessage, history);
-
-            let reply;
-
-            // Route to correct agent
-            if (intent === "LoanAgent") {
-                reply = await this.agents.LoanAgent.process(userMessage);
-
-            } else if (intent === "PortfolioAgent") {
-                reply = await this.agents.PortfolioAgent.process(userMessage);
-
-            } else if (intent === "MarketAgent") {
-                reply = await this.agents.MarketAgent.process(userMessage);
-
-            } else {
-                // General or unrecognised
-                reply = await this.handleGeneral(userMessage);
-                console.log(`\n🤖 Assistant: ${reply}`);
-            }
-
-            // Save to orchestrator memory for routing context
-            await this.memory.addMessage("user", userMessage);
-            await this.memory.addMessage("model", `[${intent}]: ${reply}`);
-
-            return reply;
-
-        } catch (error) {
-            console.error(`❌ Orchestrator error:`, error.message);
-            return "I'm experiencing issues right now. Please try again.";
-        }
-    }
+  }
 }

@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { getStockPrice } from "../tools/stockPrice.js";
+import { StockPriceTool } from "../tools/StockPriceTool.js";
 import { ConversationMemory } from "../memory/conversationMemory.js";
 import { withRetry } from "../utils/retry.js";
 import dotenv from "dotenv";
@@ -13,30 +13,18 @@ export class MarketAgent {
     this.description = "Fetches live stock and market prices";
     this.memory = new ConversationMemory(`market_${sessionId}`);
 
-    this.tools = [
-      {
-        name: "getStockPrice",
-        description: `Fetches the current live price of a stock.
-                      Use for any question about stock price, market value,
-                      or share price. For Indian stocks use NSE symbols
-                      like HDFCBANK, RELIANCE, TCS, INFY, WIPRO.
-                      If user asks for multiple stocks, call this tool
-                      multiple times — once per stock.`,
-        parameters: {
-          type: "object",
-          properties: {
-            symbol: {
-              type: "string",
-              description: `Stock symbol e.g. HDFCBANK for HDFC Bank,
-                            RELIANCE for Reliance Industries,
-                            TCS for Tata Consultancy Services,
-                            INFY for Infosys, WIPRO for Wipro`,
-            },
-          },
-          required: ["symbol"],
-        },
-      },
-    ];
+    // ← Clean: just instantiate tool classes
+    this.tools = [new StockPriceTool()];
+  }
+
+  get toolDeclarations() {
+    return this.tools.map((t) => t.toFunctionDeclaration());
+  }
+
+  async runTool(name, args) {
+    const tool = this.tools.find((t) => t.name() === name);
+    if (!tool) throw new Error(`Tool ${name} not found`);
+    return await tool.use(args);
   }
 
   async process(userMessage) {
@@ -52,68 +40,51 @@ export class MarketAgent {
       }));
 
       const model = client.getGenerativeModel({
-        model: "gemini-3.1-flash-lite",
+        model: "gemini-2.5-flash",
         systemInstruction: `You are a market data assistant for an Indian fintech app.
-                            Help users get live stock prices and market info.
-                            For Indian stocks, use NSE symbols automatically.
                             Format prices in ₹ with 2 decimal places.
-                            Show price change as ▲ for positive, ▼ for negative.
-                            If user asks for multiple stocks, call the tool
-                            once for each stock separately.`,
-        tools: [{ functionDeclarations: this.tools }],
+                            Show change as ▲ for positive, ▼ for negative.
+                            For multiple stocks, call the tool once per stock.`,
+        tools: [{ functionDeclarations: this.toolDeclarations }],
       });
 
       const chat = model.startChat({ history: chatHistory });
 
-      // Step 1 — Send user message
       let currentResult = await withRetry(
         () => chat.sendMessage(userMessage),
-        { label: "Gemini sendMessage", maxRetries: 3 }
+        { label: "MarketAgent sendMessage", maxRetries: 3 }
       );
 
-      // Step 2 — Loop to handle multiple tool calls
-      // (e.g. user asks for Reliance AND TCS — 2 separate tool calls)
       while (true) {
         const functionCall = currentResult.response.candidates[0].content.parts
-          .find((part) => part.functionCall);
+          .find((p) => p.functionCall);
 
         if (!functionCall) break;
 
         const { name, args } = functionCall.functionCall;
         console.log(`\n⚙️  Tool called: ${name}`, args);
 
-        let toolResult;
-        if (name === "getStockPrice") {
-          toolResult = await getStockPrice(args.symbol);
-        }
-
+        const toolResult = await this.runTool(name, args);
         console.log(`📊 Tool result:`, toolResult);
 
-        // Step 4 — Send tool result back to AI
         currentResult = await withRetry(
           () => chat.sendMessage([
             { functionResponse: { name, response: toolResult } },
           ]),
-          { label: "Gemini tool response", maxRetries: 3 }
+          { label: "MarketAgent tool response", maxRetries: 3 }
         );
       }
 
-      // Step 5 — Get final reply
-      // Fallback to manual formatting if Gemini returns empty
-      let finalReply = currentResult.response.text();
+      const reply = currentResult.response.text() ||
+        "Market data fetched. Ask me anything else!";
 
-      if (!finalReply || finalReply.trim() === "") {
-        finalReply = "I fetched the stock data. Please ask me again for the details.";
-      }
-
-      await this.memory.addMessage("model", finalReply);
-      console.log(`\n🤖 MarketAgent: ${finalReply}`);
-      return finalReply;
+      await this.memory.addMessage("model", reply);
+      console.log(`\n🤖 MarketAgent: ${reply}`);
+      return reply;
 
     } catch (error) {
-      const fallback = "Market data service is experiencing high load. Please try again in a moment.";
-      console.error(`❌ MarketAgent failed:`, error.message);
-      return fallback;
+      console.error(`❌ MarketAgent error:`, error.message);
+      return "Market service is temporarily unavailable. Please try again.";
     }
   }
 }
