@@ -336,15 +336,6 @@ Gemini generates grounded answer
 | Benefits of SIP Investment | Investment |
 
 ---
-
-# 📺 Runtime Demonstration
-
-| Tool Calling | RAG Retrieval |
-|---|---|
-| ![](./assets/tool-call.gif) | ![](./assets/rag-search.gif) |
-
----
-
 # 💬 Real Conversation Examples
 
 ```text
